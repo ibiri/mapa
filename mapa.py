@@ -27,7 +27,7 @@ def carregar_dados():
         'Estim1_pref': 'lider'
     })
 
-    with open("amazonas_municipios_simples.geojson", "r", encoding="utf-8") as f:
+    with open("amazonas_municipios.geojson", "r", encoding="utf-8") as f:
         geojson_data = json.load(f)
 
     return lideres, geojson_data
