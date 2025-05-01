@@ -1,46 +1,38 @@
 import streamlit as st
 import pandas as pd
-import geopandas as gpd
-import matplotlib.pyplot as plt
+import folium
+from streamlit_folium import st_folium
+import json
 
 st.set_page_config(layout="wide")
-st.title("🌍 Mapa de Liderança Eleitoral - Amazonas")
+st.title("🌍 Mapa de Liderança Eleitoral - Amazonas (Folium)")
 
 # Caminhos fixos para colunas
 COL_CODIGO = "CD_MUN"
 COL_NOME = "NM_MUN"
 
+@st.cache_data
 def carregar_dados():
     df = pd.read_csv("PesquisaAmazonas_atualizado.csv")
     df.columns = df.columns.str.strip()
     df['COD_MUN'] = df['COD_MUN'].astype(str).str.zfill(7)
 
-    # Calcular percentuais por município
     dist = df.groupby(['COD_MUN', 'Estim1_pref']).size().reset_index(name='votos')
     total = dist.groupby('COD_MUN')['votos'].transform('sum')
     dist['percentual'] = dist['votos'] / total
 
-    # Pegar o candidato com maior percentual em cada município
     lideres = dist.sort_values(['COD_MUN', 'percentual'], ascending=[True, False])
     lideres = lideres.drop_duplicates('COD_MUN')
-    lideres = lideres[['COD_MUN', 'Estim1_pref']].rename(columns={
+    lideres = lideres[['COD_MUN', 'Estim1_pref', 'percentual']].rename(columns={
         'Estim1_pref': 'lider'
     })
 
-    # Ler shapefile e aplicar nomes fixos
-    mapa = gpd.read_file("AM_Municipios_2024.shp")
-    mapa['COD_MUN'] = mapa[COL_CODIGO].astype(str).str.zfill(7)
-    mapa['nome_mun'] = mapa[COL_NOME].astype(str)
+    with open("amazonas_municipios_simples.geojson", "r", encoding="utf-8") as f:
+        geojson_data = json.load(f)
 
-    # Mesclar
-    mapa = mapa.merge(lideres, on='COD_MUN', how='left')
-    mapa['aparece'] = mapa['lider'].notna()
-    mapa['lider_david'] = mapa['lider'] == 'david_almeida'
-    mapa['lider_omar'] = mapa['lider'] == 'omar_aziz'
+    return lideres, geojson_data
 
-    return mapa
-
-mapa = carregar_dados()
+lideres, geojson_data = carregar_dados()
 
 aba = st.radio("Escolha o mapa que deseja visualizar:", [
     "1. Municípios com pesquisa",
@@ -48,32 +40,49 @@ aba = st.radio("Escolha o mapa que deseja visualizar:", [
     "3. Onde Omar Aziz lidera"
 ])
 
-fig, ax = plt.subplots(figsize=(10, 10))
+# Criar o mapa centralizado no Amazonas
+m = folium.Map(location=[-3.1, -60], zoom_start=5)
 
-# Exibir todos os municípios em cinza claro de fundo
-mapa.plot(ax=ax, color='none', edgecolor='black', linewidth=0.5)
+# Criar dicionário para facilitar acesso
+lider_dict = lideres.set_index('COD_MUN').to_dict(orient='index')
 
-# Camada com dados específicos
-if aba == "1. Municípios com pesquisa":
-    selecionado = mapa[mapa['aparece']]
-    selecionado.plot(ax=ax, color='orange', edgecolor='black', linewidth=0.5)
-    ax.set_title("Municípios com dados de pesquisa", fontsize=14)
-elif aba == "2. Onde David Almeida lidera":
-    selecionado = mapa[mapa['lider_david']]
-    selecionado.plot(ax=ax, color='green', edgecolor='black', linewidth=0.5)
-    ax.set_title("Municípios onde David Almeida lidera", fontsize=14)
-elif aba == "3. Onde Omar Aziz lidera":
-    selecionado = mapa[mapa['lider_omar']]
-    selecionado.plot(ax=ax, color='blue', edgecolor='black', linewidth=0.5)
-    ax.set_title("Municípios onde Omar Aziz lidera", fontsize=14)
+# Cores por aba
+def get_color(lider):
+    if aba == "1. Municípios com pesquisa":
+        return "orange"
+    elif aba == "2. Onde David Almeida lidera" and lider == "david_almeida":
+        return "green"
+    elif aba == "3. Onde Omar Aziz lidera" and lider == "omar_aziz":
+        return "blue"
+    return "lightgray"
 
-# Adicionar nomes apenas nos municípios com dados
-for x, y, label in zip(selecionado.geometry.centroid.x,
-                      selecionado.geometry.centroid.y,
-                      selecionado['nome_mun']):
-    ax.text(x, y, label, fontsize=4, ha='center', color='black')
+# Adicionar polígonos ao mapa
+for feature in geojson_data["features"]:
+    props = feature["properties"]
+    cod = props.get(COL_CODIGO)
+    nome = props.get(COL_NOME)
+    info = lider_dict.get(str(cod))
 
-ax.axis('off')
-st.pyplot(fig)
+    if info:
+        lider = info['lider']
+        perc = round(info['percentual'] * 100, 1)
+        tooltip = f"{nome} - {lider} ({perc}%)"
+    else:
+        lider = None
+        tooltip = nome
 
-st.caption("Fonte: Dados simulados da Projeta - Pesquisa de Mercado")
+    color = get_color(lider)
+
+    folium.GeoJson(
+        feature,
+        tooltip=tooltip,
+        style_function=lambda feat, color=color: {
+            'fillColor': color,
+            'color': 'black',
+            'weight': 0.5,
+            'fillOpacity': 0.7 if color != 'lightgray' else 0.1
+        }
+    ).add_to(m)
+
+st_folium(m, width=900, height=600)
+st.caption("Fonte: Projeta")
